@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: ajera_bronze
+    database: criticalarc-dwh 
+    schema: ajera_bronze
+    tables:
+      - name: raw_employees_detailed
+      - name: raw_projects_detailed
+      - name: raw_timesheets_detailed
