@@ -1,6 +1,7 @@
 {{
   config(
-    materialized = 'table'
+    materialized = 'table',
+    schema = 'ajera_silver'
   )
 }}
 
@@ -323,11 +324,7 @@ final AS (
 
         -- Quality flags (analyst-friendly)
         (project_key IS NOT NULL AND phase_key IS NOT NULL)
-            AS has_valid_project_keys,
-        (hours_regular IS NULL OR pm_regular_approved_at IS NOT NULL)
-            AS regular_hours_approved,
-        (hours_overtime IS NULL OR pm_overtime_approved_at IS NOT NULL)
-            AS overtime_hours_approved
+            AS has_valid_project_keys
 
     FROM daily
 )

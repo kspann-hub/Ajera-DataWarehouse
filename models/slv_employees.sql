@@ -1,4 +1,9 @@
-{{ config(materialized='table') }}
+{{
+  config(
+    materialized = 'table',
+    schema = 'ajera_silver'
+  )
+}}
 
 WITH raw_employees AS (
     SELECT * FROM {{ source('ajera_bronze', 'raw_employees_detailed') }}
