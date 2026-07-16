@@ -1,3 +1,5 @@
+
+{{ config(materialized='table', schema='ajera_gold') }}
 -- ============================================================
 -- gold_projects_incident_lookup
 -- Grain: one row per project (project_key)

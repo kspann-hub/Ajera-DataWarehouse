@@ -108,7 +108,8 @@ renamed as (
     SalesTaxCode as sales_tax_code,
     ExpenseConsultantEntry as expense_consultant_entry,
     ExpenseCostBudget as expense_cost_budget,
-    safe.parse_timestamp('%Y-%m-%dT%H:%M:%E*S', LastModifiedDate) as last_modified_at,  -- TODO verify source string format
+    safe.parse_timestamp('%Y-%m-%d %H:%M:%E*S',
+      regexp_extract(LastModifiedDate, r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+')) as last_modified_at,
     TaxLocalKey as tax_local_key,
     HoursCostBudget as hours_cost_budget,
     `Cost Labor` as cost_labor,

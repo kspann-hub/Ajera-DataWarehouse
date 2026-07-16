@@ -1,67 +1,50 @@
-
-
 {{ config(materialized='table', schema='ajera_gold') }}
 
 -- ============================================================
--- gld_timesheet_project_daily
--- Grain: one row per (timesheet × project × phase × work_date),
---        inherited unchanged from slv_timesheet_project_daily.
+-- gold_timesheet_project_daily
+-- Grain: one row per (timesheet × project × phase × work_date × activity).
+--        Regrouped from silver to collapse the regular/overtime row-split
+--        artifact (OT and regular hours for one activity-day arrived as
+--        two rows; SUM folds them into one).
 --
 -- Purpose: curated serving model for the Staff Forecaster / Retool.
---   - Projects the columns the tool needs (no joins, no aggregation)
---   - Adds the business metric `time_actualized`
 --
--- Business logic lives here (gold), not in silver:
---   time_actualized = 'YES' only when a timesheet has cleared BOTH
---   the supervisor and accounting approval gates; otherwise 'NO'.
---   NULL / unknown approvals fall to 'NO' (never actualize on unknown).
+-- Business logic (lives here in gold, not silver):
+--   time_actualized = 'YES' only when BOTH the supervisor and accounting
+--   approval gates are cleared; NULL/unknown approvals fall to 'NO'
+--   (never actualize on unknown).
 --
--- Grain note: supervisor_approved / accounting_approved are
---   timesheet-level rollups, so time_actualized is a timesheet-level
---   status repeated across every daily row of that timesheet.
---
--- Materialization: view (pure projection, always reflects silver).
---   Switch to 'table' above if Retool query performance needs it.
+-- Materialization: table.
 -- ============================================================
 
-WITH gold AS (
+WITH aggregated AS (
     SELECT
-        -- ===== Natural key for this grain =====
         timesheet_key,
         project_key,
         phase_key,
-        ajera_employee_key,
         work_date,
-
-        -- ===== Week context =====
-        week_start_date,
-        week_end_date,
-
-        -- ===== Project & phase context =====
-        project_description,
-        phase_description,
-        project_status,
-        phase_status,
-        activity_name,
         activity_key,
-
-        -- ===== Daily measures =====
-        hours_regular,
-        hours_overtime,
-        hours_total_worked,
-
-        -- ===== Approval flags (timesheet-level rollups) =====
-        supervisor_approved,
-        accounting_approved,
-
-        -- ===== Derived metric: time_actualized =====
-        -- Both gates TRUE -> 'YES'; one/both FALSE or NULL -> 'NO'.
-        CASE
-            WHEN supervisor_approved AND accounting_approved THEN 'YES'
-            ELSE 'NO'
-        END AS time_actualized
-
+        ANY_VALUE(week_start_date)      AS week_start_date,
+        ANY_VALUE(week_end_date)        AS week_end_date,
+        ANY_VALUE(project_description)  AS project_description,
+        ANY_VALUE(phase_description)    AS phase_description,
+        ANY_VALUE(project_status)       AS project_status,
+        ANY_VALUE(phase_status)         AS phase_status,
+        ANY_VALUE(activity_name)        AS activity_name,
+        ANY_VALUE(ajera_employee_key)   AS ajera_employee_key,
+        SUM(hours_regular)              AS hours_regular,
+        SUM(hours_overtime)             AS hours_overtime,
+        SUM(hours_total_worked)         AS hours_total_worked,
+        ANY_VALUE(supervisor_approved)  AS supervisor_approved,
+        ANY_VALUE(accounting_approved)  AS accounting_approved
     FROM {{ ref('slv_timesheet_project_daily') }}
+    GROUP BY timesheet_key, project_key, phase_key, work_date, activity_key
 )
 
-SELECT * FROM gold
+SELECT
+    *,
+    CASE
+        WHEN supervisor_approved AND accounting_approved THEN 'YES'
+        ELSE 'NO'
+    END AS time_actualized
+FROM aggregated

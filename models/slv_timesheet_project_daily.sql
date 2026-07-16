@@ -8,16 +8,23 @@
 -- ============================================================
 -- slv_timesheet_project_daily
 -- Grain: one row per (timesheet × project × phase × work_date)
--- 
+--
 -- Bronze→silver transformation:
 --   1. UNNEST Project.Detail[] → one row per (timesheet × project × phase)
 --   2. UNPIVOT D1–D7 wide columns → one row per work_date
 --   3. Type cast, snake_case rename, derive calendar dates
 --   4. Add quality flags and audit fields
 --
--- Header fields locked per chunk 1 review.
--- Project.Detail.* fields are provisional pending chunk 2 review.
--- Days with zero hours logged are excluded.
+-- NOTE ON DAY COLUMNS (D1–D7):
+--   Bronze is loaded with autodetect=True, so the inferred STRUCT only
+--   contains a `Dn <measure>` field if *some* row in that pull had a value
+--   for it. Which day-columns exist therefore CHANGES from pull to pull.
+--   Referencing a struct field that isn't present is a hard compile error.
+--   To make this model tolerant of any day-distribution, every D1–D7 field
+--   is read via JSON_VALUE(TO_JSON(d), ...), which returns NULL for an
+--   absent key instead of failing. This is defensive against the extractor's
+--   current behavior; if bronze is later loaded with an explicit schema,
+--   these could revert to direct d.`...` references.
 -- ============================================================
 
 WITH
@@ -50,7 +57,8 @@ unnested AS (
         s.AccountingApprovedBy                  AS accounting_approved_by,
         CAST(s.AccountingApprovedDate AS DATE)  AS accounting_approved_at,
 
-        -- ===== Project-level fields from Project.Detail (chunk 2: provisional) =====
+        -- ===== Project-level fields from Project.Detail =====
+        -- These are per-detail-row scalars, always present, so direct refs are safe.
         d.`Project Key`                         AS project_key,
         d.`Phase Key`                           AS phase_key,
         d.`Project Description`                 AS project_description,
@@ -61,84 +69,106 @@ unnested AS (
         d.`Phase Status`                        AS phase_status,
         d.`Project Manager Approved`            AS pm_approved_project_rollup,
 
-        -- ===== Wide D1–D7 columns: renamed for the unpivot below =====
-        -- Worked hours (FLOAT)
-        d.`D1 Regular`  AS d1_regular,  d.`D2 Regular`  AS d2_regular,
-        d.`D3 Regular`  AS d3_regular,  d.`D4 Regular`  AS d4_regular,
-        d.`D5 Regular`  AS d5_regular,  d.`D6 Regular`  AS d6_regular,
-        d.`D7 Regular`  AS d7_regular,
-        -- Overtime hours (only Sun, Thu, Fri, Sat exist in source)
-        d.`D1 Overtime`            AS d1_overtime,
-        CAST(NULL AS FLOAT64)      AS d2_overtime,
-        CAST(NULL AS FLOAT64)      AS d3_overtime,
-        CAST(NULL AS FLOAT64)      AS d4_overtime,
-        d.`D5 Overtime`            AS d5_overtime,
-        d.`D6 Overtime`            AS d6_overtime,
-        d.`D7 Overtime`            AS d7_overtime,
+        -- ===== Wide D1–D7 columns (all via JSON for pull-to-pull tolerance) =====
+
+        -- Regular worked hours (FLOAT)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 Regular"') AS FLOAT64) AS d1_regular,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 Regular"') AS FLOAT64) AS d2_regular,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 Regular"') AS FLOAT64) AS d3_regular,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 Regular"') AS FLOAT64) AS d4_regular,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 Regular"') AS FLOAT64) AS d5_regular,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 Regular"') AS FLOAT64) AS d6_regular,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 Regular"') AS FLOAT64) AS d7_regular,
+
+        -- Overtime hours (FLOAT)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 Overtime"') AS FLOAT64) AS d1_overtime,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 Overtime"') AS FLOAT64) AS d2_overtime,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 Overtime"') AS FLOAT64) AS d3_overtime,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 Overtime"') AS FLOAT64) AS d4_overtime,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 Overtime"') AS FLOAT64) AS d5_overtime,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 Overtime"') AS FLOAT64) AS d6_overtime,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 Overtime"') AS FLOAT64) AS d7_overtime,
 
         -- Paid hours (INT, from payroll)
-        d.`D1 Paid`    AS d1_paid,    d.`D2 Paid`    AS d2_paid,
-        d.`D3 Paid`    AS d3_paid,    d.`D4 Paid`    AS d4_paid,
-        d.`D5 Paid`    AS d5_paid,    d.`D6 Paid`    AS d6_paid,
-        d.`D7 Paid`    AS d7_paid,
-        d.`D1 OT Paid`             AS d1_ot_paid,
-        CAST(NULL AS INT64)        AS d2_ot_paid,
-        CAST(NULL AS INT64)        AS d3_ot_paid,
-        CAST(NULL AS INT64)        AS d4_ot_paid,
-        d.`D5 OT Paid`             AS d5_ot_paid,
-        d.`D6 OT Paid`             AS d6_ot_paid,
-        d.`D7 OT Paid`             AS d7_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 Paid"') AS INT64) AS d1_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 Paid"') AS INT64) AS d2_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 Paid"') AS INT64) AS d3_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 Paid"') AS INT64) AS d4_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 Paid"') AS INT64) AS d5_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 Paid"') AS INT64) AS d6_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 Paid"') AS INT64) AS d7_paid,
+
+        -- OT Paid hours (INT, from payroll)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 OT Paid"') AS INT64) AS d1_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 OT Paid"') AS INT64) AS d2_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 OT Paid"') AS INT64) AS d3_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 OT Paid"') AS INT64) AS d4_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 OT Paid"') AS INT64) AS d5_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 OT Paid"') AS INT64) AS d6_ot_paid,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 OT Paid"') AS INT64) AS d7_ot_paid,
 
         -- Billed hours (INT, to client)
-        d.`D1 Billed`    AS d1_billed,    d.`D2 Billed`    AS d2_billed,
-        d.`D3 Billed`    AS d3_billed,    d.`D4 Billed`    AS d4_billed,
-        d.`D5 Billed`    AS d5_billed,    d.`D6 Billed`    AS d6_billed,
-        d.`D7 Billed`    AS d7_billed,
-        d.`D1 OT Billed`           AS d1_ot_billed,
-        CAST(NULL AS INT64)        AS d2_ot_billed,
-        CAST(NULL AS INT64)        AS d3_ot_billed,
-        CAST(NULL AS INT64)        AS d4_ot_billed,
-        CAST(NULL AS INT64)        AS d5_ot_billed,
-        d.`D6 OT Billed`           AS d6_ot_billed,
-        d.`D7 OT Billed`           AS d7_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 Billed"') AS INT64) AS d1_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 Billed"') AS INT64) AS d2_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 Billed"') AS INT64) AS d3_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 Billed"') AS INT64) AS d4_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 Billed"') AS INT64) AS d5_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 Billed"') AS INT64) AS d6_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 Billed"') AS INT64) AS d7_billed,
 
-        -- Notes
-        d.`D1 Notes` AS d1_notes, d.`D2 Notes` AS d2_notes,
-        d.`D3 Notes` AS d3_notes, d.`D4 Notes` AS d4_notes,
-        d.`D5 Notes` AS d5_notes, d.`D6 Notes` AS d6_notes,
-        d.`D7 Notes` AS d7_notes,
+        -- OT Billed hours (INT, to client)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 OT Billed"') AS INT64) AS d1_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 OT Billed"') AS INT64) AS d2_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 OT Billed"') AS INT64) AS d3_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 OT Billed"') AS INT64) AS d4_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 OT Billed"') AS INT64) AS d5_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 OT Billed"') AS INT64) AS d6_ot_billed,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 OT Billed"') AS INT64) AS d7_ot_billed,
 
-        -- PM approval, regular hours
-        d.`D1 PM Approved By`   AS d1_reg_approved_by,
-        d.`D2 PM Approved By`   AS d2_reg_approved_by,
-        d.`D3 PM Approved By`   AS d3_reg_approved_by,
-        d.`D4 PM Approved By`   AS d4_reg_approved_by,
-        d.`D5 PM Approved By`   AS d5_reg_approved_by,
-        d.`D6 PM Approved By`   AS d6_reg_approved_by,
-        d.`D7 PM Approved By`   AS d7_reg_approved_by,
-        d.`D1 PM Approved Date` AS d1_reg_approved_at,
-        d.`D2 PM Approved Date` AS d2_reg_approved_at,
-        d.`D3 PM Approved Date` AS d3_reg_approved_at,
-        d.`D4 PM Approved Date` AS d4_reg_approved_at,
-        d.`D5 PM Approved Date` AS d5_reg_approved_at,
-        d.`D6 PM Approved Date` AS d6_reg_approved_at,
-        d.`D7 PM Approved Date` AS d7_reg_approved_at,
+        -- Notes (STRING; JSON_VALUE already returns text)
+        JSON_VALUE(TO_JSON(d), '$."D1 Notes"') AS d1_notes,
+        JSON_VALUE(TO_JSON(d), '$."D2 Notes"') AS d2_notes,
+        JSON_VALUE(TO_JSON(d), '$."D3 Notes"') AS d3_notes,
+        JSON_VALUE(TO_JSON(d), '$."D4 Notes"') AS d4_notes,
+        JSON_VALUE(TO_JSON(d), '$."D5 Notes"') AS d5_notes,
+        JSON_VALUE(TO_JSON(d), '$."D6 Notes"') AS d6_notes,
+        JSON_VALUE(TO_JSON(d), '$."D7 Notes"') AS d7_notes,
 
-        -- PM approval, overtime hours (only Sun, Thu, Fri, Sat exist in source)
-        d.`D1 OT PM Approved By`     AS d1_ot_approved_by,
-        CAST(NULL AS INT64)          AS d2_ot_approved_by,
-        CAST(NULL AS INT64)          AS d3_ot_approved_by,
-        CAST(NULL AS INT64)          AS d4_ot_approved_by,
-        d.`D5 OT PM Approved By`     AS d5_ot_approved_by,
-        d.`D6 OT PM Approved By`     AS d6_ot_approved_by,
-        d.`D7 OT PM Approved By`     AS d7_ot_approved_by,
-        d.`D1 OT PM Approved Date`   AS d1_ot_approved_at,
-        CAST(NULL AS DATE)           AS d2_ot_approved_at,
-        CAST(NULL AS DATE)           AS d3_ot_approved_at,
-        CAST(NULL AS DATE)           AS d4_ot_approved_at,
-        d.`D5 OT PM Approved Date`   AS d5_ot_approved_at,
-        d.`D6 OT PM Approved Date`   AS d6_ot_approved_at,
-        d.`D7 OT PM Approved Date`   AS d7_ot_approved_at
+        -- PM approval, regular hours — approver employee key (INT)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 PM Approved By"') AS INT64) AS d1_reg_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 PM Approved By"') AS INT64) AS d2_reg_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 PM Approved By"') AS INT64) AS d3_reg_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 PM Approved By"') AS INT64) AS d4_reg_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 PM Approved By"') AS INT64) AS d5_reg_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 PM Approved By"') AS INT64) AS d6_reg_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 PM Approved By"') AS INT64) AS d7_reg_approved_by,
+
+        -- PM approval, regular hours — approval date (DATE)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 PM Approved Date"') AS DATE) AS d1_reg_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 PM Approved Date"') AS DATE) AS d2_reg_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 PM Approved Date"') AS DATE) AS d3_reg_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 PM Approved Date"') AS DATE) AS d4_reg_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 PM Approved Date"') AS DATE) AS d5_reg_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 PM Approved Date"') AS DATE) AS d6_reg_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 PM Approved Date"') AS DATE) AS d7_reg_approved_at,
+
+        -- PM approval, overtime hours — approver employee key (INT)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 OT PM Approved By"') AS INT64) AS d1_ot_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 OT PM Approved By"') AS INT64) AS d2_ot_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 OT PM Approved By"') AS INT64) AS d3_ot_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 OT PM Approved By"') AS INT64) AS d4_ot_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 OT PM Approved By"') AS INT64) AS d5_ot_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 OT PM Approved By"') AS INT64) AS d6_ot_approved_by,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 OT PM Approved By"') AS INT64) AS d7_ot_approved_by,
+
+        -- PM approval, overtime hours — approval date (DATE)
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D1 OT PM Approved Date"') AS DATE) AS d1_ot_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D2 OT PM Approved Date"') AS DATE) AS d2_ot_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D3 OT PM Approved Date"') AS DATE) AS d3_ot_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D4 OT PM Approved Date"') AS DATE) AS d4_ot_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D5 OT PM Approved Date"') AS DATE) AS d5_ot_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D6 OT PM Approved Date"') AS DATE) AS d6_ot_approved_at,
+        SAFE_CAST(JSON_VALUE(TO_JSON(d), '$."D7 OT PM Approved Date"') AS DATE) AS d7_ot_approved_at
 
     FROM source s
     LEFT JOIN UNNEST(s.Project.Detail) AS d
