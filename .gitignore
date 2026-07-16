@@ -2,3 +2,16 @@
 target/
 dbt_packages/
 logs/
+
+
+$env:AJERA_URL      = "https://ajera.com/V008493/AjeraAPI.ashx?ew0KICAiQ2xpZW50SUQiOiA4NDkzLA0KICAiRGF0YWJhc2VJRCI6IDIzNTY4LA0KICAiSXNTYW1wbGVEYXRhIjogZmFsc2UNCn0%3d"
+$env:AJERA_USER     = "ArcLab2026"
+$env:AJERA_PASSWORD = "Critical@1"
+
+ 
+$env:GOOGLE_APPLICATION_CREDENTIALS = "C:\Users\KSpann\Downloads\criticalarc-dwh-d6739dc63c4e.json"
+$env:SUPABASE_DB_HOST     = "aws-1-us-west-2.pooler.supabase.com"
+$env:SUPABASE_DB_PORT     = "5432"
+$env:SUPABASE_DB_NAME     = "postgres"
+$env:SUPABASE_DB_USER     = "postgres.mxaoompxcdjoiwnsmixm"   # session pooler format
+$env:SUPABASE_DB_PASSWORD = "Ut-f*NE8k-F8+xH"
